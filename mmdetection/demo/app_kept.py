@@ -2,11 +2,14 @@ import streamlit as st
 from local_components import card_container, card_container_border, ch1, ch2, ch3, ch4
 from streamlit_extras.tags import tagger_component
 import io
+import os
 import cv2
 import random
 import numpy as np
 from PIL import Image
 from argparse import ArgumentParser
+import sqlite3 
+import pickle
 
 all_colors = ['red', 'green', 'blue', 'purple', 'orange', 'yellow', 'gray', 'lightblue', 'maroon', 'navy', 'purple', 'fuchsia', 'olive', 'teal', 'aqua', 'cyan', 'tomato', 'lime', 'orange', 'gold']
 
@@ -16,8 +19,11 @@ if "model_init" not in st.session_state.keys() and "model_det" not in st.session
     st.session_state["model_det"] = inference_detector,init_detector
 else:
     inference_detector,init_detector = st.session_state["model_det"]
+if "submitted" not in st.session_state.keys():
+    st.session_state.submitted = False
 # model = st.session_state["model"]
 print(st.session_state["model_init"])
+
 
 
 #loading configs and weights
@@ -28,15 +34,72 @@ def load_model():
     return model
 
 def search_products(out_det):
-    if out_det is not None:
-        w_factor = [5, 2, 1, 0.5] #category,supercategory,color,attributes
-        for obj in out_det:
-            obj_cls = obj[0]
-            obj_attr = obj[1]
-            obj_clr = obj[2]
-            st.write(obj_cls)
-            st.write(obj_attr)
-            st.write(obj_clr)
+    # Connect to SQLite database
+    _conn = sqlite3.connect('db.sqlite3')
+    _cur = _conn.cursor()
+
+    # Retrieve data from the database
+    _cur.execute('SELECT * FROM product_data')
+    db_results = _cur.fetchall()
+    if not db_results:
+        print("No data available at the moment! Try again later")
+    else:
+        # Calculate rating and select highest rated images
+        selected_results = calculate_rating(out_det, db_results)
+        return selected_results
+        # Print selected results
+        # print("Selected Results:")
+        # for result in selected_results:
+            # print(result)
+        # print(len(result))
+
+    # Close connection
+    _conn.close()
+    # if out_det is not None:
+    #     w_factor = [5, 2, 1, 0.5] #category,supercategory,color,attributes
+    #     for obj in out_det:
+    #         obj_cls = obj[0]
+    #         obj_attr = obj[1]
+    #         obj_clr = obj[2]
+    #         st.write(obj_cls)
+    #         st.write(obj_attr)
+    #         st.write(obj_clr)
+
+def calculate_rating(new_detection, db_results):
+    ratings = []
+    for db_row in db_results:
+        if not db_row:
+            return "No data"
+        img_det = pickle.loads(db_row[2])
+        rating = 0
+        for db_obj in img_det:
+            for obj in new_detection:
+                category, _ = obj[0].split('|')
+                if category == img_det[0]:  # Match category
+                    rating += 5
+                if obj[1] == db_obj[1]:  # Match super category
+                    rating += 2
+                    for attribute in obj[2].split('\n'):
+                        if attribute.strip() in db_obj[2]:
+                            rating += 0.5
+                if obj[3] == db_obj[3]:  # Match color
+                    rating += 1.5
+        ratings.append((rating, [db_row[1], img_det, db_row[3]]))  # Store rating with the object details
+    
+    
+    # Sort ratings by descending order
+    ratings.sort(reverse=True)
+    
+    # Select highest rated images (rating > 2) and limit to 6 if more
+    selected_results = []
+    for rating, obj_all in ratings:
+        if rating > 10:
+            selected_results.append(obj_all)
+        if len(selected_results) >= 6:
+            break
+    
+    return selected_results
+
 def infer_model(model, img):
     result = inference_detector(model, img)
     ret = model._show_result(img, result, score_thr=0.5, out_file=None)
@@ -62,14 +125,14 @@ def main():
     else:
         model = st.session_state['model_saved']
     with st.container():
-        st.header("Image Segmentation App")
+        st.header("Fashion Analysis and Cataloging Using Mask-RCNN")
         # st.sidebar.markdown("1. People")
         # st.title("No Walk Zone Violation 🧍")
         # st.write("📍 The user specifies a safe zone by drawing a polygon and the violations are detected accordingly.")
         # st.write("📍 This can be used in factories to identify safe zones and make sure workers are walking within them.")
         # st.write("📍 This can also be used in zebra crossings to ensure pedestrian safety.")
         # drawing_mode = st.sidebar.selectbox("Drawing tool:", ("polygon","line", "rect", "circle","point"))
-        st.subheader("Dashboard")
+        
         file_upload = st.file_uploader("Upload Image:", type=["png", "jpg", "jpeg"])
 
         if file_upload is not None and model:
@@ -157,22 +220,71 @@ def main():
             #     st.write(obj_attr)
             #     st.write(obj_clr)
             # st.image(img)
-            if st.button("Search for Products") and model:
-                col1, col2 = st.columns(2)
-                with col1:
-                    with card_container_border(key=f"card1"):
-                        st.image(img, channels="BGR")
-                        st.write("col1")
-                        st.write(out_det)
-                with col2:
-                    with card_container_border(key=f"card1"):
-                        st.image(img, channels="BGR")
-                        st.write("col1")
-                        st.write(out_det)
+            st_btn = st.button(label="Search for Products", on_click=lambda: st.session_state.update(submitted=True))
+            if st.session_state.submitted and model:
+                st.subheader("Related Results")
+                all_results = search_products(out_det)
+                if all_results is not None:
+                    # it has data
+                    if isinstance(all_results, str):
+                        st.write(all_results)
+                    else:
+                        st.write(f"{len(all_results)} Related Results Found")
+                        r_cols = 2
+                        image_dir = "batch"
+                        for j in range(0, len(all_results), r_cols):
+                            col1, col2 = st.columns(r_cols)
+                            for k in range(r_cols):
+                                redz = j+k
+                                rez = all_results[redz]
+                                if rez is None:
+                                    break
+                                if not os.path.isfile(os.path.join('batch', rez[2])):
+                                    print("no file oooo")
+                                    break
+                                if k == 0:
+                                    with col1:
+                                        with card_container_border(key=f"card1"):
+                                            image_file = os.path.join(image_dir, rez[2])
+                                            image_det = ''
+                                            img_seen = set()
+                                            for i, itm in enumerate(rez[1]):
+                                                if itm[0] not in img_seen:
+                                                    image_det += f" {itm[0]},"
+                                                img_seen.add(itm[0])
+                                                if i == 0:
+                                                    t_obj = itm[2].split(', ')[0]
+                                                    image_det += f" {t_obj} {itm[3]}"
+                                            st.image(image_file, channels="BGR")
+                                            ch4(text=rez[0], weight="bolder")
+                                            st.write(image_det)
+                                else:
+                                    with col2:
+                                        with card_container_border(key=f"card2"):
+                                            image_file = os.path.join(image_dir, rez[2])
+                                            image_det = ''
+                                            img_seen = set()
+                                            for i, itm in enumerate(rez[1]):
+                                                if itm[0] not in img_seen:
+                                                    image_det += f" {itm[0]},"
+                                                img_seen.add(itm[0])
+                                                if i == 0:
+                                                    t_obj = itm[2].split(', ')[0]
+                                                    image_det += f" {t_obj} {itm[3]}"
+                                            st.image(image_file, channels="BGR")
+                                            ch4(text=rez[0], weight="bolder")
+                                            st.write(image_det)
+                            # k = (i%2)+1
+                            #[] # [db_row[1], img_det, db_row[3]]
+
+                else:
+                    st.write("Oops! Something went wrong, refresh the page and try again. If issue persists, contact owner of the project")
+                # col1, col2 = st.columns(2)
+                
                 # search_products(out_det)
-                st.write("📍 The user specifies a safe zone by drawing a polygon and the violations are detected accordingly.")
-                st.write("📍 This can be used in factories to identify safe zones and make sure workers are walking within them.")
-                st.write("📍 This can also be used in zebra crossings to ensure pedestrian safety.")
+                # st.write("📍 The user specifies a safe zone by drawing a polygon and the violations are detected accordingly.")
+                # st.write("📍 This can be used in factories to identify safe zones and make sure workers are walking within them.")
+                # st.write("📍 This can also be used in zebra crossings to ensure pedestrian safety.")
         # image,list_coor=draw_bound(drawing_mode,bg_image)
         # result=st.button('Search for Products')
 
