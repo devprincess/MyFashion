@@ -52,11 +52,14 @@ def calculate_rating(new_detection, db_results):
             return "No data"
         img_det = pickle.loads(db_row[2])
         rating = 0
-        for db_obj in img_det:
-            for obj in new_detection:
-                category, _ = obj[0].split('|')
-                if category == img_det[0]:  # Match category
-                    rating += 5
+        for i, db_obj in enumerate(img_det):
+            for j, obj in enumerate(new_detection):
+                category = obj[0].split('|')[0]
+                if category == db_obj[0]:  # Match category
+                    if i == 0 and j == 0:
+                        rating += 10
+                    else:
+                        rating += 5
                 if obj[1] == db_obj[1]:  # Match super category
                     rating += 2
                     for attribute in obj[2].split('\n'):
@@ -64,7 +67,7 @@ def calculate_rating(new_detection, db_results):
                             rating += 0.5
                 if obj[3] == db_obj[3]:  # Match color
                     rating += 1.5
-        ratings.append((rating, [db_row[1], img_det, db_row[3]]))
+        ratings.append(((rating/len(img_det))+(len(img_det)*2), [db_row[1], img_det, db_row[3]]))
     
     ratings.sort(reverse=True)
     
